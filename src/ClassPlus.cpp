@@ -97,6 +97,49 @@ int ClassPlus::compute(){
 
 }
 
+void ClassPlus::getThermoVecs(std::vector<double>& z, 
+		std::vector<double>& tau,
+		std::vector<double>& xe, 
+		std::vector<double>& xe_fid, 
+		std::vector<double>& xe_pert,
+		std::vector<double>& kappa,
+		std::vector<double>& exp_kappa){
+
+	if (!dofree) throw out_of_range("no ThermoVec because CLASS failed");
+
+	char titles[_MAXTITLESTRINGLENGTH_]={0};
+	double * data;
+	int size_data, number_of_titles;
+
+	thermodynamics_output_titles(&ba,&th,titles);
+
+	number_of_titles = 0;
+	for(int i=0; i<strlen(titles); i++){
+		if(titles[i] == '\t') number_of_titles++;	
+	}
+	
+	size_data = number_of_titles*(th.tt_size);
+	data = (double*)malloc(sizeof(double)*size_data);
+	std::cout<<"number of titles "<<number_of_titles<<std::endl;
+	thermodynamics_output_data(&ba, &th, number_of_titles, data);
+
+    for (int index_vertical=0; index_vertical<(th.tt_size); index_vertical++){
+      	z.push_back(data[index_vertical*number_of_titles+0]);
+      	tau.push_back(data[index_vertical*number_of_titles+1]);
+      	/* xe.push_back(data[index_vertical*number_of_titles+th.index_th_xe]); */
+          /* xe_fid.push_back(data[index_vertical*number_of_titles+th.index_th_xe_fid]); */
+          /* xe_pert.push_back(data[index_vertical*number_of_titles+th.index_th_xe_pert]); */
+          /* kappa.push_back(data[index_vertical*number_of_titles+th.index_th_dkappa]); */
+      	/* exp_kappa.push_back(data[index_vertical*number_of_titles+th.index_th_exp_m_kappa]); */
+		xe.push_back(data[index_vertical*number_of_titles+2]);
+		xe_fid.push_back(data[index_vertical*number_of_titles+3]);
+		xe_pert.push_back(data[index_vertical*number_of_titles+4]);
+		kappa.push_back(data[index_vertical*number_of_titles+5]);
+		exp_kappa.push_back(data[index_vertical*number_of_titles+6]);
+	}
+	free(data);
+}
+
 double ClassPlus::getCl(ClassPlus::CL type, const long &l){
 	if (!dofree) throw out_of_range("no Cl available because CLASS failed");
 
@@ -137,6 +180,7 @@ double ClassPlus::getCl(ClassPlus::CL type, const long &l){
 	return cl_val;
 
 }
+
 void ClassPlus::getCls(const std::vector<unsigned>& lvec, //input
 		      std::vector<double>& cltt,
 		      std::vector<double>& clte,

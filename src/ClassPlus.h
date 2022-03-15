@@ -85,7 +85,15 @@ class ClassPlus {
 				std::vector<double>& clte,
 				std::vector<double>& clee,
 				std::vector<double>& clbb);
-
+		
+		void getThermoVecs(std::vector<double>& z, 
+				std::vector<double>& tau,
+				std::vector<double>& xe, 
+				std::vector<double>& xe_fid, 
+				std::vector<double>& xe_pert,
+				std::vector<double>& kappa,
+				std::vector<double>& exp_kappa);
+	
 		int class_main(
 				 struct file_content * pfc,
 				 struct precision * ppr,
