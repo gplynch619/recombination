@@ -25,18 +25,31 @@ class RecFisher:
     def __init__(self, cosmo_parameters, rec_parameters, name):
         self.cosmo_params = cosmo_parameters
         self.rec_params = rec_parameters
+
+        self.is_debug = False
+        if "debug" in self.rec_params.keys():
+            self.is_debug = self.rec_params["debug"]
+
         self.basename = name
         self.filebase = self.create_outdir()
+        
+        self.debug_print("Setting parameters")
 
         self.set_parameters()
+
+        self.debug_print("Writing log")
 
         self.write_log()
     
         self.perturbations = []
         self.class_z_array = []
 
+        self.debug_print("Initializing Boltzman Solver")
+
         self.BoltzmannSolver = Classy.Class()
         self.BoltzmannSolver.set(self.class_common_settings)
+
+        self.debug_print("Solver Initialized")
 
         self.tt_fid = []
         self.ee_fid = []
@@ -53,32 +66,44 @@ class RecFisher:
 
         self.run_counter = 0
         self.total_runs = self.pivots.shape[0]*self.amplitudes.shape[0]
-
-
+        self.inc_percent = 0.05
 
     def compute_Fisher(self):
         """ Main routine which computes the full Fisher matrix for this recombination history.
         """
-
+        self.debug_print("Starting computation of Fisher matrix")
         tt_derivs = []
         te_derivs = []
         ee_derivs = []
+       
+        #if self.do_perturbations:
+        #    self.BoltzmannSolver.set({'xe_single_zi': self.rec_params['zmin_pert']})
+        #    self.BoltzmannSolver.set({'xe_pert_amps': '0'})
 
-        self.BoltzmannSolver.set({'xe_single_zi': self.rec_params['zmin_pert']})
-        self.BoltzmannSolver.set({'xe_pert_amps': '0'})
+        self.debug_print("Beginning parameter variation")
+
+        if self.do_perturbations:
+            self.BoltzmannSolver.set({'xe_single_zi': self.rec_params['zmin_pert']})
+            self.BoltzmannSolver.set({'xe_pert_amps': '0'})
 
         for param_name, fiducial_value in self.cosmo_params.items():
+            self.BoltzmannSolver.set(self.cosmo_params)
             print("Varying parameter: {}".format(param_name))
-            cmb_responses = self.compute_cmb_standard_response(param_name, fiducial_value)
+            cmb_responses = self.compute_cmb_standard_response(param_name, fiducial_value, self.inc_percent)
+            print("Current H0 is {}".format(self.get_current_H0()))
             tt_derivs.append(cmb_responses[0])
             te_derivs.append(cmb_responses[1])
             ee_derivs.append(cmb_responses[2])
 
-        for z in self.pivots:
-            cmb_responses = self.compute_cmb_perturbation_response(z)
-            tt_derivs.append(cmb_responses[0])
-            te_derivs.append(cmb_responses[1])
-            ee_derivs.append(cmb_responses[2])
+        if self.do_perturbations:
+            for z in self.pivots:
+                self.BoltzmannSolver.set(self.cosmo_params)
+                cmb_responses = self.compute_cmb_perturbation_response(z)
+                tt_derivs.append(cmb_responses[0])
+                te_derivs.append(cmb_responses[1])
+                ee_derivs.append(cmb_responses[2])
+        else:
+            print("Skipping perturbations")
 
         tt_derivs = np.vstack(tt_derivs)    
         te_derivs = np.vstack(te_derivs)    
@@ -90,9 +115,10 @@ class RecFisher:
         np.save(os.path.join(self.filebase,"pivots"), self.pivots)
         np.save(os.path.join(self.filebase,"z"), self.BoltzmannSolver.get_thermodynamics()['z'])
 
-        self.BoltzmannSolver.set({'xe_single_width': self.width})
-        self.BoltzmannSolver.set({'xe_single_zi': self.rec_params['zmin_pert']})
-        self.BoltzmannSolver.set({'xe_pert_amps': '0'})
+        if self.do_perturbations:
+            self.BoltzmannSolver.set({'xe_single_width': self.width})
+            self.BoltzmannSolver.set({'xe_single_zi': self.rec_params['zmin_pert']})
+            self.BoltzmannSolver.set({'xe_pert_amps': '0'})
 
         for key,val in self.cosmo_params.items():
             self.BoltzmannSolver.set({key: val})
@@ -143,7 +169,7 @@ class RecFisher:
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_143']/B2_l)
             P_channels.append(self.noise_parameters['weight_inv_P_143']/B2_l)
-        elif self.noise_parameters['use_217']:
+        if self.noise_parameters['use_217']:
             beam_width_143 = (self.noise_parameters['beam_FWHM_217_arcmin']*arcmin_to_radians)/np.sqrt(8*np.log(2))
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_217']/B2_l)
@@ -174,14 +200,19 @@ class RecFisher:
             Parameters are incremented by a fixed percentage supplied
             by the percent argument.
         """
-
-        dp = percent*parameter_value
-        trial_values = np.linspace(-2*dp, 2*dp, self.amplitudes.shape[0]) + parameter_value
+        if parameter_name=="A_s":
+            ln10e10As = np.log(parameter_value*(10**10))
+            dp = percent*ln10e10As
+            trial_values = np.linspace(-2*dp, 2*dp, self.amplitudes.shape[0]) + ln10e10As
+            trial_values = np.exp(trial_values)/(10**10)
+        else:
+            dp = percent*parameter_value
+            trial_values = np.linspace(-2*dp, 2*dp, self.amplitudes.shape[0]) + parameter_value
         
         tt_array=[]
         te_array=[]
         ee_array=[]
-        
+
         for trial in trial_values:
             self.BoltzmannSolver.set({parameter_name: trial}) #sets perturbation
             self.BoltzmannSolver.compute()
@@ -216,7 +247,7 @@ class RecFisher:
             amp_str = "{}".format(qi)        #Setting up string of perturbation amplitudes
             self.BoltzmannSolver.set({'xe_pert_amps': amp_str}) #sets perturbation
             self.BoltzmannSolver.compute()
-
+            self.debug_print("H0 value is {}".format(self.get_current_H0()))
             cls = self.BoltzmannSolver.lensed_cl(self.ll_max)
             tt_array.append(cls['tt'][2:])
             te_array.append(cls['te'][2:])
@@ -238,11 +269,13 @@ class RecFisher:
 
         return [tt_grad[self.middle], te_grad[self.middle], ee_grad[self.middle]]
 
+    def get_current_H0(self):
+         return self.BoltzmannSolver.get_current_derived_parameters(["H0"])["H0"]
+
     def set_parameters(self):
         """ Sets derived parameters to given or default values
         """
-        self.Npert = self.rec_params['Npert']
-        self.pivots = np.linspace(self.rec_params['zmin_pert'], self.rec_params['zmax_pert'], self.Npert)
+        
         self.ll_max = self.rec_params["ll_max"]
 
         if "amplitudes" in self.rec_params:
@@ -250,8 +283,9 @@ class RecFisher:
         else:
             self.amplitudes = np.linspace(-.1, .1, 5)
 
-        self.dz = (self.rec_params['zmax_pert'] - self.rec_params['zmin_pert'])/self.Npert
-        self.width=self.dz/2.355/3.  #dz is 1/3 the FWHM
+        if "increment_percentage" in self.rec_params:
+            self.inc_percent = self.rec_params["increment_percentage"]
+
         
         self.middle = int((self.amplitudes.shape[0]-1)/2)
 
@@ -271,24 +305,48 @@ class RecFisher:
                                 'use_217' : True
                                 }  
     
+        th_verbose = 0
+        input_verbose = 0
+        if "thermodynamics_verbose" in self.rec_params.keys():
+            th_verbose = self.rec_params["thermodynamics_verbose"]
+        if "input_verbose" in self.rec_params.keys():
+            input_verbose = self.rec_params["input_verbose"]
+
+
         self.class_common_settings = {'output' : 'tCl,pCl,lCl',
-                                    'H0':self.cosmo_params["H0"],
-                                    'omega_b':self.cosmo_params["omega_b"],
-                                    'omega_cdm':self.cosmo_params["omega_cdm"],
-                                    'sigma8': self.cosmo_params["sigma8"],
-                                    'n_s':self.cosmo_params["n_s"],
-                                    'tau_reio': self.cosmo_params["tau_reio"],
                                     #Class run parameters
-                                    'thermodynamics_verbose': 0,
-                                    'input_verbose': 0,
+                                    'thermodynamics_verbose': th_verbose,
+                                    'input_verbose': input_verbose,
                                     'lensing': 'yes',
-                                    'perturb_xe': 'yes',
+                                    }
+
+        self.do_perturbations = True
+
+        self.class_common_settings["perturb_xe"] = self.rec_params["perturb_xe"]
+            
+        if self.class_common_settings["perturb_xe"].lower()=='no':
+            self.do_perturbations = False
+            self.Npert = 0
+            self.pivots = np.array([0,0])
+            self.dz = 0
+            self.width= 0  #dz is 1/3 the FWHM
+        else:
+            self.Npert = self.rec_params['Npert']
+            self.pivots = np.linspace(self.rec_params['zmin_pert'], self.rec_params['zmax_pert'], self.Npert)
+            self.dz = (self.rec_params['zmax_pert'] - self.rec_params['zmin_pert'])/self.Npert
+            self.width=self.dz/2.355/3.  #dz is 1/3 the FWHM
+            self.class_common_settings.update({
                                     'xe_pert_num': 1,
                                     'zmin_pert': self.rec_params['zmin_pert'],
                                     'zmax_pert': self.rec_params['zmax_pert'],
                                     'thermo_Nz_lin': self.rec_params['linear_sampling'],
                                     'xe_single_width': self.width
-                                    }
+                                    })
+
+
+
+        for key,val in self.cosmo_params.items():
+            self.class_common_settings[key] = val
 
     def create_outdir(self):
         """ Creates a unique output directory for products.
@@ -318,16 +376,24 @@ class RecFisher:
             for k,v in self.class_common_settings.items():
                 file.write("{0} {1}\n".format(k,v))
             file.write("}\n")
-            file.write("zmin {}\n".format(self.rec_params['zmin_pert']))
-            file.write("zmax {}\n".format(self.rec_params['zmax_pert']))
+            if self.do_perturbations:
+                file.write("zmin {}\n".format(self.rec_params['zmin_pert']))
+                file.write("zmax {}\n".format(self.rec_params['zmax_pert']))
+                file.write("Npert {}\n".format(self.Npert))
+                zstr = ",".join(self.pivots.astype(str))
+                file.write("pivots {}\n".format(zstr))
+                file.write("dz {}\n".format(self.dz))
+                file.write("width {}\n".format(self.width))
+            
+            file.write("do_perturbations {}\n".format(self.do_perturbations))
+            
             file.write("ll_max {}\n".format(self.ll_max))
             file.write("linear_sampling {}\n".format(self.rec_params['linear_sampling']))
-            file.write("Npert {}\n".format(self.Npert))
-            zstr = ",".join(self.pivots.astype(str))
-            file.write("pivots {}\n".format(zstr))
-            file.write("dz {}\n".format(self.dz))
-            file.write("width {}\n".format(self.width))
-       
+            
+    def debug_print(self, out):
+        if(self.is_debug):
+            print(out)
+        
 class FisherData:
 
     def __init__(self, path):
@@ -338,28 +404,132 @@ class FisherData:
         self.class_parameters = class_parameters
         self.other_parameters = other_parameters
 
+        cosmo_param_names = ["omega_b", "omega_cdm", "n_s", "tau_reio", "A_s", "ln10^{10}A_s", "100*theta_s", "H0", "sigma8"]
+        self.cosmo_params = {}
+
+        for key, item in self.class_parameters.items():
+            if key in cosmo_param_names:
+                self.cosmo_params[key] = item
+
+        print(self.cosmo_params)
+        assert len(self.cosmo_params)==6
+
         self.Fisher_full = np.load(os.path.join(path, "Fisher_full.npy"))
         self.Fisher_marginalized = np.load(os.path.join(path, "Fisher_marginalized.npy"))
         self.Fisher_fixed = np.load(os.path.join(path, "Fisher_fixed.npy"))
 
-        self.width = float(other_parameters["width"])
-        self.pivots = np.load(os.path.join(path, "pivots.npy"))
-        self.zmin = float(class_parameters["zmin_pert"])
-        self.zmax = float(class_parameters["zmax_pert"])
+        if other_parameters["do_perturbations"]=="True":
+            self.has_perturbations = True
+        else:
+            self.has_perturbations = False
 
-        self.PCA_parameters = {'width': self.width, 
-                            'zmin' : self.zmin, 
-                            'zmax' : self.zmax, 
-                            'pivots' : self.pivots
-                            }
+        if self.has_perturbations:
+            self.width = float(other_parameters["width"])
+            self.pivots = np.load(os.path.join(path, "pivots.npy"))
+            self.zmin = float(class_parameters["zmin_pert"])
+            self.zmax = float(class_parameters["zmax_pert"])
+
+            self.PCA_parameters = {'width': self.width, 
+                                'zmin' : self.zmin, 
+                                'zmax' : self.zmax, 
+                                'pivots' : self.pivots
+                                }
+
 
         return
 
     def get_standard_block(self):
         return self.Fisher_full[:6, :6]
 
+    def get_reparameterized_standard_block(self, H0_fid=67.66, increment_percentage=0.05, 
+                                            full=False, amplitudes=np.linspace(-.1, .1, 5)):
+
+        internal_common_settings = {'output' : 'tCl',
+                   'thermodynamics_verbose': 0,
+                   'input_verbose': 0,
+                   'perturb_xe': 'no'
+                   }
+        
+        internal_cosmo_settings = {}
+        
+        for parameter_name, parameter_value in self.cosmo_params.items():
+            if parameter_name=="100*theta_s":
+                continue
+            internal_cosmo_settings[parameter_name] = parameter_value
+        
+        internal_cosmo_settings["H0"] = H0_fid
+
+        M = Classy.Class()
+        M.set(internal_common_settings)
+        M.set(internal_cosmo_settings)
+
+        trial_arrays = {}
+        print(internal_cosmo_settings.items())
+        for parameter_name, parameter_value in internal_cosmo_settings.items():
+            dp = float(increment_percentage)*float(parameter_value)
+            trial_values = np.linspace(-2*dp, 2*dp, 20) + float(parameter_value)
+            trial_arrays[parameter_name]= trial_values
+
+        slopes=[]
+        
+        for parameter_name, trial_values in trial_arrays.items():
+            M.set(internal_cosmo_settings)
+            print("Varying {}".format(parameter_name))
+            calculated_values = []
+            for value in trial_values:
+                M.set({parameter_name: value})
+                M.compute(level=["thermodynamics"])
+                calculated_values.append(M.get_current_derived_parameters(["100*theta_s"])["100*theta_s"])
+            slopes.append(np.average(np.gradient(calculated_values, trial_values)))
+
+        if full:
+            
+            M.set(internal_common_settings)
+            M.set(internal_cosmo_settings)
+            
+            internal_pert_settings={'perturb_xe': 'yes',
+                                    'xe_pert_num': 1,
+                                    'zmin_pert': self.zmin,
+                                    'zmax_pert': self.zmax,
+                                    'xe_single_width': self.width
+                                    }
+            
+            M.set(internal_pert_settings)
+
+            for zi in self.pivots:
+                M.set({'xe_single_zi': zi})
+                calculated_values=[]
+                for qi in amplitudes:
+                    amp_str = "{}".format(qi)        
+                    M.set({'xe_pert_amps': amp_str})
+                    M.compute(level=["thermodynamics"])
+                    calculated_values.append(M.get_current_derived_parameters(["100*theta_s"])["100*theta_s"])
+                slopes.append(np.gradient(calculated_values, amplitudes)[2])
+            
+            J = np.zeros(self.Fisher_full.shape)
+            np.fill_diagonal(J, 1.)
+            J[5,:] = slopes
+
+            print(np.array(slopes))
+
+            final = np.einsum("ij, jk, kl -> il", J.T, self.Fisher_full, J)
+
+        else:
+            
+            J = np.zeros([5,6])
+            ones = np.fill_diagonal(J, 1)
+            J = np.vstack([J, slopes])
+            print(slopes)
+            final =  np.einsum("ij, jk, kl -> il", J.T, self.Fisher_full[:6, :6], J)
+
+        return final
+
     def run_PCA(self, matrix):
-        return PCA(matrix, self.PCA_parameters)
+        if self.has_perturbations:
+            return PCA(matrix, self.PCA_parameters)
+        else:
+            print("Directory has no perturbations")
+            return
 
     def get_logname_from_dir(self):
         fn = os.path.basename(self.path)
