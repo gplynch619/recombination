@@ -8,6 +8,7 @@ from scipy.interpolate import CubicSpline
 from scipy.interpolate import interp1d
 import scipy.integrate
 import scipy
+import matplotlib.patches
 import time
 
 def square(f):
@@ -22,19 +23,24 @@ def renormalize(norm):
         return wrapper
     return dec
 
-class RecFisher:
+class FisherCalculator:
     """ A class to compute a recombination Fisher matrix.
     """
-    def __init__(self, cosmo_parameters, rec_parameters, name):
+    def __init__(self, cosmo_parameters, fisher_settings, name):
         self.cosmo_params = cosmo_parameters
-        self.rec_params = rec_parameters
+        self.fisher_settings = fisher_settings
 
         self.is_debug = False
-        if "debug" in self.rec_params.keys():
-            self.is_debug = self.rec_params["debug"]
+        if "debug" in self.fisher_settings.keys():
+            self.is_debug = self.fisher_settings["debug"]
 
-        self.basename = name
-        self.filebase = self.create_outdir()
+        self.save_output = True
+        if "save_output" in self.fisher_settings.keys():
+            self.save_output = self.fisher_settings["save_output"]
+
+        if self.save_output:
+            self.basename = name
+            self.filebase = self.create_outdir()
 
         self.set_parameters()
 
@@ -47,14 +53,12 @@ class RecFisher:
         self.compute_fiducial_cosmology()
 
         self.reset_boltzmann()
-
-        self.write_log()
+        if self.save_output:
+            self.write_log()
 
         self.dCl = []
 
-        self.Fisher = []
-        self.Fisher_fixed = []
-        self.Fisher_marginalized =[]
+        self.Fisher = FisherMatrix()
 
         self.error_covariance = []
         self.error_covariance_inv = []
@@ -112,43 +116,43 @@ class RecFisher:
         return [tt_grad, ee_grad, te_grad]
 
     def compute_Fisher(self, target_parameters):
-        """ Main routine which computes the full Fisher matrix for this recombination history.
+        """ Main routine which computes the full Fisher matrix for this experiment. 
         """
         print("Computing Fisher matrix for variables: {}".format(target_parameters))
         tt_derivs = []
         te_derivs = []
         ee_derivs = []
-       
-        divider=0
-        for param in target_parameters:
-            if param in self.cosmo_params:
-                divider+=1
+
+        col_names = []
 
         for param in target_parameters:
             if param=="xe_control_points":
                 counter = 1
-                for redshift in self.xe_control_pivots[1:-1]:
+                for redshift in self.xe_control_pivots[1:-1]: #first and last pivot anchor DeltaX to 0 at the endpoints of perturbation
                     # first get the index we are perturbing:
-                    print("q_{}".format(counter))
-                    counter+=1
-                    index_of_point=0
+                    cp_name = "q_{}".format(counter, redshift)
+                    print(cp_name)
+                    #index_of_point=0
                     formatted_cp_strings = []
-                    cp_values = np.linspace(-1,1,5)
-                    zz = list(np.full(5, redshift))
-                    cp_values_rescaled = self.rescale_pert_amp(cp_values, zz)
-                    for i,val in enumerate(self.rec_params["xe_control_pivots"].split(",")):
-                        if float(val)==redshift:
-                            index_of_point=i
+                    dp = self.delta_param[cp_name]
+                    cp_values = np.linspace(-2*dp,2*dp,5)
+                    #zz = list(np.full(5, redshift))
+                    #cp_values_rescaled = self.rescale_pert_amp(cp_values, zz)
+                    #for i,val in enumerate(self.rec_params["xe_control_pivots"].split(",")):
+                    #    if float(val)==redshift:
+                    #        index_of_point=i
                     temp_cp_array = np.zeros(self.xe_control_pivots.shape)
                     for p in cp_values:
-                        temp_cp_array[index_of_point] = p
+                        temp_cp_array[counter] = p
                         temp_cp_array_str = ["{:.2f}".format(q) for q in temp_cp_array]
                         formatted_cp_strings.append(",".join(temp_cp_array_str))
                     self.reset_boltzmann() #resets boltzmann solver to defaults
-                    cmb_response = self.partial_derivative(param, formatted_cp_strings, cp_values_rescaled)
+                    cmb_response = self.partial_derivative(param, formatted_cp_strings, dp)
                     tt_derivs.append(cmb_response[0])
                     ee_derivs.append(cmb_response[1])
                     te_derivs.append(cmb_response[2])
+                    col_names.append(cp_name)
+                    counter+=1
             elif param=="xe_pert_amps":
                 for z in self.pivots:
                     self.reset_boltzmann()
@@ -159,21 +163,23 @@ class RecFisher:
             else:
                 print(param)
                 self.reset_boltzmann()
-                dp = self.inc_percent*self.cosmo_params[param]
+                dp = self.delta_param[param]
                 trial_values = np.linspace(-2*dp, 2*dp, 5) + self.cosmo_params[param]
                 cmb_response = self.partial_derivative(param, trial_values, dp)
                 tt_derivs.append(cmb_response[0])
                 ee_derivs.append(cmb_response[1])
                 te_derivs.append(cmb_response[2])
+                col_names.append(param)
 
         tt_derivs = np.vstack(tt_derivs)    
         te_derivs = np.vstack(te_derivs)    
         ee_derivs = np.vstack(ee_derivs) 
-
-        np.savez(os.path.join(self.filebase,"tt_derivs"), data=tt_derivs, comment='')
-        np.savez(os.path.join(self.filebase,"te_derivs"), data=te_derivs, comment='')
-        np.savez(os.path.join(self.filebase,"ee_derivs"), data=ee_derivs, comment='')
-        np.savez(os.path.join(self.filebase,"z"), self.BoltzmannSolver.get_thermodynamics()['z'])
+        
+        if self.save_output:
+            np.savez(os.path.join(self.filebase,"tt_derivs"), data=tt_derivs, comment='')
+            np.savez(os.path.join(self.filebase,"te_derivs"), data=te_derivs, comment='')
+            np.savez(os.path.join(self.filebase,"ee_derivs"), data=ee_derivs, comment='')
+            np.savez(os.path.join(self.filebase,"z"), self.BoltzmannSolver.get_thermodynamics()['z'])
 
         self.reset_boltzmann()
 
@@ -185,36 +191,34 @@ class RecFisher:
 
         self.error_covariance_inv = np.linalg.inv(self.error_covariance)
 
-        self.Fisher = np.einsum("iXl,lXY,jYl->ij", self.dCl, self.error_covariance_inv, self.dCl)
+        self.Fisher.from_array(np.einsum("iXl,lXY,jYl->ij", self.dCl, self.error_covariance_inv, self.dCl), col_names, self.class_default_settings, self.fisher_settings)
 
-        standard_block = self.Fisher[:divider, :divider]
-        cross_block = self.Fisher[:divider, divider:]
-        perturbation_block = self.Fisher[divider:, divider:]
+        if self.save_output:
+            np.savez(os.path.join(self.filebase,"Fisher_full"), data=self.Fisher.Fisher, comment=col_names)
 
-        self.Fisher_marginalized = perturbation_block - np.einsum("ai,ij,jk->ak", cross_block.T, np.linalg.inv(standard_block), cross_block)
-        self.Fisher_fixed = perturbation_block
 
-        standard_cols = target_parameters[:divider]
-        extra_cols=""
-        if self.xe_pert_type=="basis":
-            extra_cols = ",".join(["{:.2f}".format(z) for z in self.pivots])
-        if self.xe_pert_type=="control":
-            #extra_cols = ",".join(["{:.2f}".format(z) for z in self.xe_control_pivots])
-            temp = []
-            i=1
-            for _ in np.arange(len(self.xe_control_pivots)-2):
-                temp.append("q_{}".format(i))
-                i+=1
-            extra_cols = ",".join(temp)
-        full_cols = "{},{}".format(",".join(["{}".format(s) for s in standard_cols]), extra_cols)
-        np.savez(os.path.join(self.filebase,"Fisher_full"), data=self.Fisher, comment=full_cols)
-        np.savez(os.path.join(self.filebase,"Fisher_marginalized"), data=self.Fisher_marginalized, comment = extra_cols)
-        np.savez(os.path.join(self.filebase,"Fisher_fixed"), data=self.Fisher_fixed, comment=extra_cols)
+        #standard_block = self.Fisher[:divider, :divider]
+        #cross_block = self.Fisher[:divider, divider:]
+        #perturbation_block = self.Fisher[divider:, divider:]
+
+        #self.Fisher_marginalized = perturbation_block - np.einsum("ai,ij,jk->ak", cross_block.T, np.linalg.inv(standard_block), cross_block)
+        #self.Fisher_fixed = perturbation_block
+
+        #standard_cols = target_parameters[:divider]
+  
+        #full_cols = "{},{}".format(",".join(["{}".format(s) for s in standard_cols]), extra_cols)
+        #np.savez(os.path.join(self.filebase,"Fisher_full"), data=self.Fisher, comment=full_cols)
+        #np.savez(os.path.join(self.filebase,"Fisher_marginalized"), data=self.Fisher_marginalized, comment = extra_cols)
+        #np.savez(os.path.join(self.filebase,"Fisher_fixed"), data=self.Fisher_fixed, comment=extra_cols)
 
         now = datetime.now()
         date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
 
         print("Fisher matrices calculation completed at {}".format(date_time))
+
+        return self.Fisher
+
+
 
     def rescale_pert_amp(self, amp, zz):
         @np.vectorize
@@ -307,32 +311,42 @@ class RecFisher:
          return self.BoltzmannSolver.get_current_derived_parameters(["H0"])["H0"]
 
     def set_parameters(self):
-        """ Sets derived parameters to given or default values
+        """ Sets up calculator given the supplied settings
         """
         
-        #copying some key parameters over to make code more legible
+        #######################################################
+        # Copying some parameters internally to make code
+        # neater.
+        #######################################################
 
-        self.ll_max = self.rec_params["ll_max"]
-        self.xe_pert_type = self.rec_params["xe_pert_type"]
+        self.ll_max = self.fisher_settings["ll_max"]
+        self.xe_pert_type = self.fisher_settings["xe_pert_type"]
         self.ll = np.arange(2, self.ll_max+1)
-        self.zmin = self.rec_params["zmin_pert"]
-        self.zmax = self.rec_params["zmax_pert"]
-        if "ll_min_tt" in self.rec_params:
-            self.ll_min_tt = self.rec_params["ll_min_tt"]
+        self.zmin = self.fisher_settings["zmin_pert"]
+        self.zmax = self.fisher_settings["zmax_pert"]
+
+        #######################################################
+        # These parameters control which ell ranges to use
+        # in fisher matrix calculations
+        ####################################################### 
+        
+        if "ll_min_tt" in self.fisher_settings:
+            self.ll_min_tt = self.fisher_settings["ll_min_tt"]
         else:
             self.ll_min_tt = 2
 
-        if "ll_min_pol" in self.rec_params:
-            self.ll_min_pol = self.rec_params["ll_min_pol"]
+        if "ll_min_pol" in self.fisher_settings:
+            self.ll_min_pol = self.fisher_settings["ll_min_pol"]
         else:
             self.ll_min_pol = 2
 
-        if "inc_percentage" in self.rec_params:
-            self.inc_percent = self.rec_params["inc_percentage"]
-        else:
-            self.inc_percent = 0.05
 
-        # setting internal noise parameters. defaults overridden with user supplied values
+
+        #######################################################
+        # Default noise covariance matrix parameters
+        # Overwritten by values passed by user
+        #######################################################
+
         self.noise_parameters = {'beam_FWHM_143_arcmin' : 7.3,
                                 'beam_FWHM_217_arcmin' : 4.90,
                                 'weight_inv_T_143' : 0.36e-4,
@@ -344,22 +358,24 @@ class RecFisher:
                                 'use_217' : True
                                 }  
 
-        if "noise_params" in self.rec_params:
-            for key,value in self.rec_params["noise_params"].items():
+        if "noise_params" in self.fisher_settings:
+            for key,value in self.fisher_settings["noise_params"].items():
                 self.noise_parameters[key] = value
-    
-        #constructing default class setting.
-        #class_default_settings can be considered as a "blank slate"
+        
+        #######################################################
+        # Create two settings dictionaries for common uses
+        # - 'default': considered a blanck slate, reset values
+        # - 'fiducial': settings for the fidcucial cosmology 
+        #######################################################   
 
         th_verbose = 0
         input_verbose = 0
-        if "thermodynamics_verbose" in self.rec_params.keys():
-            th_verbose = self.rec_params["thermodynamics_verbose"]
-        if "input_verbose" in self.rec_params.keys():
-            input_verbose = self.rec_params["input_verbose"]
+        if "thermodynamics_verbose" in self.fisher_settings.keys():
+            th_verbose = self.fisher_settings["thermodynamics_verbose"]
+        if "input_verbose" in self.fisher_settings.keys():
+            input_verbose = self.fisher_settings["input_verbose"]
 
         self.class_default_settings = {'output' : 'tCl,pCl,lCl',
-                                    #Class run parameters
                                     'thermodynamics_verbose': th_verbose,
                                     'input_verbose': input_verbose,
                                     'lensing': 'yes',
@@ -369,14 +385,22 @@ class RecFisher:
         self.class_fiducial_settings.update({"xe_pert_type": "none"})
 
         self.class_default_settings["xe_pert_type"] = self.xe_pert_type
-            
+    
+        #######################################################
+        # Set internal settings for each perturbation type
+        # - 'none': no class parameter updates needed
+        # - 'basis': need to update class with required settings
+        #    like number of perturbations and width
+        # - 'control': need to update things like str_pivots
+        #######################################################   
+
         if self.xe_pert_type=="none":
             self.Npert = 0
             self.pivots = np.array([0,0])
             self.dz = 0
             self.width= 0  #dz is 1/3 the FWHM
         elif self.xe_pert_type=="basis":
-            self.Npert = self.rec_params['Npert']
+            self.Npert = self.fisher_settings['Npert']
             self.pivots = np.linspace(self.zmin, self.zmax, self.Npert)
             self.dz = (self.zmax - self.zmin)/self.Npert
             self.width=self.dz/2.355/3.  #dz is 1/3 the FWHM
@@ -384,12 +408,12 @@ class RecFisher:
                                     'xe_pert_num': 1,
                                     'zmin_pert': self.zmin,
                                     'zmax_pert': self.zmax,
-                                    'thermo_Nz_lin': self.rec_params['linear_sampling'],
+                                    'thermo_Nz_lin': self.fisher_settings['linear_sampling'],
                                     'xe_single_width': self.width,
                                     'xe_single_zi': self.zmin
                                     })
         elif self.xe_pert_type=="control":
-            self.xe_control_pivots = np.array([float(z) for z in self.rec_params["xe_control_pivots"].split(",")])
+            self.xe_control_pivots = np.array([float(z) for z in self.fisher_settings["xe_control_pivots"].split(",")])
             self.Npert = len(self.xe_control_pivots)
             control_points = np.zeros(shape=self.xe_control_pivots.shape)
             control_points_str = ",".join(["{:.1f}".format(p) for p in control_points])
@@ -397,7 +421,7 @@ class RecFisher:
                                                 "zmin_pert": self.zmin,
                                                 "zmax_pert": self.zmax,
                                                 "xe_control_points": control_points_str,
-                                                "xe_control_pivots": self.rec_params["xe_control_pivots"],
+                                                "xe_control_pivots": self.fisher_settings["xe_control_pivots"],
                                                 "start_sources_at_tau_c_over_tau_h": 0.004
                                                 })
 
@@ -405,14 +429,34 @@ class RecFisher:
             self.class_default_settings[key] = val
             self.class_fiducial_settings[key] = val
 
+        #######################################################
+        # Creating dictionary of step sizes for the partial
+        # derivatives in the Fisher calculation
+        ####################################################### 
+
+        self.delta_param = {}
+
+        for param_name, param_value in self.cosmo_params.items():
+            self.delta_param[param_name] = 0.05*param_value
+
+        cp_name_list = ["q_{}".format(int(x)) for x in np.arange(1,self.Npert-1)]
+
+        for cp in cp_name_list:
+            self.delta_param[cp] = 0.2
+
+        if "delta_param" in self.fisher_settings:
+            for param_name, step_value in self.fisher_settings["delta_param"].items():
+                self.delta_param[param_name] = step_value
+
+        return 
+
     def write_log(self):
         now = datetime.now()
         #date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
         class_param_name = os.path.join(self.filebase ,"{}.class_param".format(self.basename))
         rec_param_name = os.path.join(self.filebase ,"{}.rec_param".format(self.basename))
         np.save(os.path.join(self.filebase,class_param_name), self.class_default_settings)
-        np.save(os.path.join(self.filebase,rec_param_name), self.rec_params)
-
+        np.save(os.path.join(self.filebase,rec_param_name), self.fisher_settings)
 
     def create_outdir(self):
         """ Creates a unique output directory for products.
@@ -433,54 +477,96 @@ class RecFisher:
         if(self.is_debug):
             print(out)
         
-class FisherData:
+class FisherMatrix:
 
-    def __init__(self, path):
+    def __init__(self):
         
-        self.path = path
-        class_parameters, other_parameters = self.read_log()
+        self.is_loaded=False
+        self.path = ''
 
-        self.class_parameters = class_parameters
-        self.other_parameters = other_parameters
+        self.class_parameters = {}
+        self.other_parameters = {}
 
-        cosmo_param_names = ["omega_b", "omega_cdm", "n_s", "tau_reio", "A_s", "ln10^{10}A_s", "100*theta_s", "H0", "sigma8"]
-        self.cosmo_params = {}
+        self.cosmo_param_list = ["omega_b", "omega_cdm", "n_s", "tau_reio", "A_s", "ln10^{10}A_s", "100*theta_s", "H0", "sigma8"]
+        self.varied_params = {}
 
-        #for key, item in self.class_parameters.items():
-        #    if key in cosmo_param_names:
-        #        self.cosmo_params[key] = item
-
-        #print(self.cosmo_params)
-
-        self.Fisher_full = np.load(os.path.join(path, "Fisher_full.npz"))["data"]
-        self.col_names = np.load(os.path.join(path, "Fisher_full.npz"))["comment"]
-        self.Fisher_marginalized = np.load(os.path.join(path, "Fisher_marginalized.npz"))["data"]
-        self.Fisher_fixed = np.load(os.path.join(path, "Fisher_fixed.npz"))["data"]
-
-        #if self.has_perturbations:
-        #    self.width = float(other_parameters["width"])
-        #    self.pivots = np.load(os.path.join(path, "pivots.npy"))
-        #    self.zmin = float(class_parameters["zmin_pert"])
-        #    self.zmax = float(class_parameters["zmax_pert"])
-
-        #    self.PCA_parameters = {'width': self.width, 
-        #                        'zmin' : self.zmin, 
-        #                        'zmax' : self.zmax, 
-        #                        'pivots' : self.pivots
-        #                        }
-
+        self.Fisher = []
+        self.col_names = []
 
         return
 
-    def get_standard_block(self):
-        return self.Fisher_full[:6, :6]
+    def from_file(self, path):
+        
+        self.path = path
+        class_parameters, fisher_settings = self.read_log()
 
-    def run_PCA(self, matrix):
-        if self.has_perturbations:
-            return PCA(matrix, self.PCA_parameters)
-        else:
-            print("Directory has no perturbations")
-            return
+        self.class_parameters = class_parameters
+        self.fisher_settings = fisher_settings
+
+        self.varied_params = {}
+
+        for key, item in self.class_parameters.items():
+            if key in self.cosmo_param_list:
+                self.varied_params[key] = item
+
+        if self.fisher_settings["xe_pert_type"]=="control":
+            for i in np.arange(1, self.class_parameters["xe_pert_num"]-1):
+                self.varied_params["q_{}".format(i)] = 0.0
+
+
+        self.Fisher = np.load(os.path.join(path, "Fisher_full.npz"))["data"]
+        self.col_names = np.load(os.path.join(path, "Fisher_full.npz"))["comment"]
+
+        self.is_loaded = True
+
+    def from_array(self, matrix, col_names, class_params, fisher_settings):
+        self.Fisher = matrix
+        self.col_names = col_names
+        self.class_parameters = class_params
+        self.fisher_settings = fisher_settings
+        
+        self.varied_params = {}
+
+        for key, item in self.class_parameters.items():
+            if key in self.cosmo_param_list:
+                self.varied_params[key] = item
+
+        if self.fisher_settings["xe_pert_type"]=="control":
+            for i in np.arange(1, self.class_parameters["xe_pert_num"]-1):
+                self.varied_params["q_{}".format(i)] = 0.0
+
+        self.is_loaded = True
+
+    def get_standard_block(self):
+        return self.Fisher[:6, :6]
+
+    def get_marginalized_matrix(self, parameters_to_keep):
+        indices_to_keep = np.where(np.isin(self.col_names, parameters_to_keep))[0]
+        marg_cols = np.array(self.col_names)[indices_to_keep]
+        sorted_ind = [int(np.where(marg_cols==n)[0]) for n in parameters_to_keep]
+        cov = np.linalg.pinv(self.Fisher)
+        marginalized = np.linalg.pinv(cov[indices_to_keep, :][:, indices_to_keep])
+        marginalized_resort = marginalized[sorted_ind,:][:,sorted_ind]
+        return marginalized_resort
+
+    def ellipse2d(self, parameter_combo): #should be list of 2 parameter names
+        center = [self.varied_params[parameter_combo[0]], self.varied_params[parameter_combo[1]]]
+        mat = np.linalg.pinv(self.get_marginalized_matrix(parameter_combo))
+        sigx2 = mat[0,0]
+        sigy2 = mat[1,1]
+        cross = mat[0,1]
+        a = np.sqrt((sigx2 + sigy2)/2. + np.sqrt((sigx2 - sigy2)**2/4. + cross**2))
+        b = np.sqrt((sigx2 + sigy2)/2. - np.sqrt((sigx2 - sigy2)**2/4. + cross**2))
+        theta=0.5*np.arctan2(2*cross,sigx2-sigy2)*180./(np.pi)
+        alpha=np.sqrt(scipy.special.chdtri(2,1-0.68))
+        return matplotlib.patches.Ellipse((center[0], center[1]), alpha*2*a, alpha*2*b,
+                     angle=theta, linewidth=2, fill=False, zorder=2, color="red")
+   #def run_PCA(self, matrix):
+   #     if self.has_perturbations:
+   #         return PCA(matrix, self.PCA_parameters)
+   #     else:
+   #         print("Directory has no perturbations")
+   #         return
 
     def get_logname_from_dir(self):
         fn = os.path.basename(self.path)
