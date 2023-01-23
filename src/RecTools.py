@@ -63,15 +63,53 @@ class FisherCalculator:
         self.error_covariance = []
         self.error_covariance_inv = []
 
+        self.target_params = []
+
         self.run_counter = 0
         if(self.xe_pert_type=="basis"):
             self.total_runs = self.pivots.shape[0]*5
         elif(self.xe_pert_type=="control"):
             self.total_runs = self.xe_control_pivots.shape[0]*5
 
-    def reset_boltzmann(self):
+    def reset_boltzmann(self, params=None):
         self.BoltzmannSolver.empty()
         self.BoltzmannSolver.set(self.class_default_settings)
+
+    # takes a dictionary of parameter values and converts to a dictionary understood by class
+    # values not in the passed dictionary are set to their defaults
+    
+    def class_cosmo_format(self, param_dict):
+        return_dict = {}
+        if all(k in param_dict for k in ("tau_reio", "ln10^{10}A_s", "1e9*A_s*exp(-2tau)")):
+            print("Cannot self-consistently determine parameters. Include only two of: [tau_reio, ln10^{10}A_s, 1e9*A_s*exp(-2tau)]")
+            return 0
+        if all(k in self.cosmo_params for k in ("tau_reio", "ln10^{10}A_s", "1e9*A_s*exp(-2tau)")):
+            print("Cannot self-consistently determine parameters. Cosmo_params can contain only two of: [tau_reio, ln10^{10}A_s, 1e9*A_s*exp(-2tau)]")
+            return 0
+
+        for pname, pvalue in param_dict.items():
+            if(pname=="tau_reio"):
+                return_dict[pname] = pvalue
+                if("1e9*A_s*exp(-2tau)" in self.cosmo_params):
+                    As_1e10 = self.cosmo_params["1e9*A_s*exp(-2tau)"]*np.exp(2*pvalue)*10
+                    return_dict["ln10^{10}A_s"] = np.log(As_1e10)
+            elif(pname=="ln10^{10}A_s"):
+                return_dict[pname] = pvalue
+                if("1e9*A_s*exp(-2tau)" in self.cosmo_params):
+                    v = self.cosmo_params["1e9*A_s*exp(-2tau)"]
+                    tau = (pvalue - np.log(10*v))/2.0 
+                    return_dict["tau_reio"] = tau
+            elif(pname=="1e9*A_s*exp(-2tau)"):
+                if "tau_reio" in self.cosmo_params:
+                    As_1e10 = pvalue*np.exp(2*self.cosmo_params["tau_reio"])*10
+                    return_dict["ln10^{10}A_s"] = np.log(As_1e10)
+                if "ln10^{10}A_s" in self.cosmo_params:
+                    tau = (self.cosmo_params["ln10^{10}A_s"] - np.log(10*pvalue))/2.0
+                    return_dict["tau_reio"] = tau
+            else:
+                return_dict[pname] = pvalue
+        
+        return return_dict
 
     def compute_fiducial_cosmology(self):
         self.BoltzmannSolver.empty()
@@ -93,7 +131,7 @@ class FisherCalculator:
         ee_array=[]
 
         for trial in list_of_values:
-            self.BoltzmannSolver.set({parameter_name: trial}) #sets perturbation
+            self.BoltzmannSolver.set(self.class_cosmo_format({parameter_name: trial})) #sets perturbation
             self.BoltzmannSolver.compute()
             cls = self.BoltzmannSolver.lensed_cl(self.ll_max)
             tt = cls['tt'][2:]
@@ -124,6 +162,8 @@ class FisherCalculator:
         ee_derivs = []
 
         col_names = []
+
+        self.target_params = target_parameters
 
         for param in target_parameters:
             if param=="xe_control_points":
@@ -191,7 +231,12 @@ class FisherCalculator:
 
         self.error_covariance_inv = np.linalg.inv(self.error_covariance)
 
-        self.Fisher.from_array(np.einsum("iXl,lXY,jYl->ij", self.dCl, self.error_covariance_inv, self.dCl), col_names, self.class_default_settings, self.fisher_settings)
+        self.Fisher.from_array(np.einsum("iXl,lXY,jYl->ij", self.dCl, self.error_covariance_inv, self.dCl), col_names, self.cosmo_params, self.class_default_settings, self.fisher_settings)
+
+        for key, value in self.priors.items():
+            if key in col_names:
+                index = col_names.index(key)
+                self.Fisher.Fisher[index, index] += 1/value**2
 
         if self.save_output:
             np.savez(os.path.join(self.filebase,"Fisher_full"), data=self.Fisher.Fisher, comment=col_names)
@@ -211,6 +256,9 @@ class FisherCalculator:
         #np.savez(os.path.join(self.filebase,"Fisher_marginalized"), data=self.Fisher_marginalized, comment = extra_cols)
         #np.savez(os.path.join(self.filebase,"Fisher_fixed"), data=self.Fisher_fixed, comment=extra_cols)
 
+
+        self.target_params = []
+        
         now = datetime.now()
         date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
 
@@ -233,12 +281,12 @@ class FisherCalculator:
         P_channels = []
         if self.noise_parameters['use_143']:
             #convert from arcmin -> radians, then divide by 2.355 to get sigma from FWHM
-            beam_width_143 = (self.noise_parameters['beam_FWHM_143_arcmin']*arcmin_to_radians)/np.sqrt(8*np.log(2))
+            beam_width_143 = (self.noise_parameters['beam_FWHM_143_arcmin']*arcmin_to_radians)#/np.sqrt(8*np.log(2))
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_143']/B2_l)
             P_channels.append(self.noise_parameters['weight_inv_P_143']/B2_l)
         if self.noise_parameters['use_217']:
-            beam_width_143 = (self.noise_parameters['beam_FWHM_217_arcmin']*arcmin_to_radians)/np.sqrt(8*np.log(2))
+            beam_width_143 = (self.noise_parameters['beam_FWHM_217_arcmin']*arcmin_to_radians)#/np.sqrt(8*np.log(2))
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_217']/B2_l)
             P_channels.append(self.noise_parameters['weight_inv_P_217']/B2_l)
@@ -340,7 +388,10 @@ class FisherCalculator:
         else:
             self.ll_min_pol = 2
 
-
+        self.priors = {}
+        if 'priors' in self.fisher_settings:
+            for key, value in self.fisher_settings['priors'].items():
+                self.priors[key] = value
 
         #######################################################
         # Default noise covariance matrix parameters
@@ -425,7 +476,8 @@ class FisherCalculator:
                                                 "start_sources_at_tau_c_over_tau_h": 0.004
                                                 })
 
-        for key,val in self.cosmo_params.items():
+        class_cosmo_params = self.class_cosmo_format(self.cosmo_params)
+        for key,val in class_cosmo_params.items():
             self.class_default_settings[key] = val
             self.class_fiducial_settings[key] = val
 
@@ -519,7 +571,7 @@ class FisherMatrix:
 
         self.is_loaded = True
 
-    def from_array(self, matrix, col_names, class_params, fisher_settings):
+    def from_array(self, matrix, col_names, cosmo_params, class_params, fisher_settings):
         self.Fisher = matrix
         self.col_names = col_names
         self.class_parameters = class_params
@@ -527,8 +579,7 @@ class FisherMatrix:
         
         self.varied_params = {}
 
-        for key, item in self.class_parameters.items():
-            if key in self.cosmo_param_list:
+        for key, item in cosmo_params.items():
                 self.varied_params[key] = item
 
         if self.fisher_settings["xe_pert_type"]=="control":
@@ -549,7 +600,7 @@ class FisherMatrix:
         marginalized_resort = marginalized[sorted_ind,:][:,sorted_ind]
         return marginalized_resort
 
-    def ellipse2d(self, parameter_combo): #should be list of 2 parameter names
+    def ellipse2d(self, parameter_combo, color="red"): #should be list of 2 parameter names
         center = [self.varied_params[parameter_combo[0]], self.varied_params[parameter_combo[1]]]
         mat = np.linalg.pinv(self.get_marginalized_matrix(parameter_combo))
         sigx2 = mat[0,0]
@@ -560,7 +611,7 @@ class FisherMatrix:
         theta=0.5*np.arctan2(2*cross,sigx2-sigy2)*180./(np.pi)
         alpha=np.sqrt(scipy.special.chdtri(2,1-0.68))
         return matplotlib.patches.Ellipse((center[0], center[1]), alpha*2*a, alpha*2*b,
-                     angle=theta, linewidth=2, fill=False, zorder=2, color="red")
+                     angle=theta, linewidth=2, fill=False, zorder=2, color=color)
    #def run_PCA(self, matrix):
    #     if self.has_perturbations:
    #         return PCA(matrix, self.PCA_parameters)
