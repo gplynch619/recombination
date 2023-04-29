@@ -12,21 +12,22 @@ def call_minimizer(h, outfile, N_free_control_point, zmin, zmax, var, length):
 def main():
     use_pool = False
     basedir = "/Users/gabe/projects/recombination"
-    filename = "nldr_result_multi.csv"
+    filename = "nldr_result_h73_more.csv"
     outfile = os.path.join(basedir, "data/{}".format(filename))
 
     starting_at = 0
     if os.path.exists(outfile):
         starting_at = sum(1 for line in open(outfile))
 
-    h_list = np.linspace(0.5, 0.9, 40)
-    N = 17
-    zmin = 650
-    zmax = 1400
+    #h_list = np.linspace(0.5, 0.9, 40)
+    h_list = np.linspace(0.725, 0.735, 20)
+    N = 14
+    zmin = 800
+    zmax = 1700
     
     #parameters for CP priors
     var = 1.0
-    length = 100
+    length = 75
 
     if(use_pool):
         pool_size = 2

@@ -72,6 +72,7 @@ class FisherCalculator:
             self.total_runs = self.xe_control_pivots.shape[0]*5
 
     def reset_boltzmann(self, params=None):
+        self.BoltzmannSolver.struct_cleanup()
         self.BoltzmannSolver.empty()
         self.BoltzmannSolver.set(self.class_default_settings)
 
@@ -430,6 +431,7 @@ class FisherCalculator:
                                     'thermodynamics_verbose': th_verbose,
                                     'input_verbose': input_verbose,
                                     'lensing': 'yes',
+                                    'l_max_scalars': self.ll_max
                                     }
 
         self.class_fiducial_settings = self.class_default_settings.copy()
@@ -540,6 +542,16 @@ class FisherMatrix:
         self.other_parameters = {}
 
         self.cosmo_param_list = ["omega_b", "omega_cdm", "n_s", "tau_reio", "A_s", "ln10^{10}A_s", "100*theta_s", "H0", "sigma8"]
+        self.label_dict = {"omega_b": "\omega_b",
+        "omega_cdm": "\omega_{cdm}",
+        "n_s": "n_s",
+        "tau_reio": "\\tau_{reio}",
+        "ln10^{10}A_s": "\ln10^{10} A_s",
+        "H0": "H_0",
+        "A_s": "A_s",
+        "100*theta_s": "100*\\theta_s",
+        "sigma8": "\sigma_8"
+        }
         self.varied_params = {}
 
         self.Fisher = []
@@ -572,7 +584,7 @@ class FisherMatrix:
         self.is_loaded = True
 
     def from_array(self, matrix, col_names, cosmo_params, class_params, fisher_settings):
-        self.Fisher = matrix
+        self.Fisher = np.copy(matrix)
         self.col_names = col_names
         self.class_parameters = class_params
         self.fisher_settings = fisher_settings
@@ -599,6 +611,38 @@ class FisherMatrix:
         marginalized = np.linalg.pinv(cov[indices_to_keep, :][:, indices_to_keep])
         marginalized_resort = marginalized[sorted_ind,:][:,sorted_ind]
         return marginalized_resort
+
+    def get_marginalized_Fisher(self, parameters_to_keep):
+        F = FisherMatrix()
+        F.Fisher = self.get_marginalized_matrix(parameters_to_keep)
+        F.class_parameters = self.class_parameters
+        F.fisher_settings = self.fisher_settings
+        F.varied_params = {k:self.varied_params[k] for k in parameters_to_keep}
+        F.col_names=parameters_to_keep
+        F.is_loaded=True
+        return F
+
+    def get_marginalized_1d(self, parameter):
+        cov = np.linalg.pinv(self.Fisher)
+        i = self.get_index_of_cols([parameter])[0]
+        return 1/cov[i,i]
+
+    def get_index_of_cols(self, cols):
+        return [self.col_names.index(c) for c in cols]
+
+    def get_conditioned_matrix(self, parameters_to_keep):
+        keep_ind = self.get_index_of_cols(parameters_to_keep)
+        return self.Fisher[keep_ind, :][:, keep_ind]
+
+    def get_conditioned_Fisher(self, parameters_to_keep):
+        F = FisherMatrix()
+        F.Fisher = self.get_conditioned_matrix(parameters_to_keep)
+        F.class_parameters = self.class_parameters
+        F.fisher_settings = self.fisher_settings
+        F.varied_params = {k:self.varied_params[k] for k in parameters_to_keep}
+        F.col_names = [self.col_names[i] for i in self.get_index_of_cols(parameters_to_keep)]
+        F.is_loaded=True
+        return F
 
     def ellipse2d(self, parameter_combo, color="red"): #should be list of 2 parameter names
         center = [self.varied_params[parameter_combo[0]], self.varied_params[parameter_combo[1]]]

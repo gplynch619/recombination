@@ -117,7 +117,7 @@ def create_cobaya_input(pivot_info, scale=1, length=50):
         #                               "ref": {"dist": "norm", "loc": 0, "scale": 2},
         #                               "drop": True})
         cp_input = ("q_{}".format(i), {#"ref": {"dist": "norm", "loc": 0, "scale": scale},
-                                        "prior": {"min": scale+1, "max": scale+2},
+                                        "prior": {"min": scale-2, "max": scale+2},
                                         "drop": True})
         param_info.append(cp_input)
     param_info.append(("q_{}".format(len(pivot_info[1])+1), {"value": 0., "drop": True}))
@@ -134,7 +134,7 @@ def create_cobaya_input(pivot_info, scale=1, length=50):
     #prior_info = {"control_point_joint_prior": 'prior_wrapper([{}])'.format(control_point_names_str)}
     prior_info = {"control_point_joint_prior": 'lambda {}: stats.multivariate_normal.logpdf([{}], mean={}, cov={}, allow_singular=True)'.format(control_point_names_str, control_point_names_str, np.zeros(len(pivot_info[0])).tolist(), sig.tolist())}
 
-    sampler_info = {"minimize": {"ignore_prior": True}}
+    sampler_info = {"minimize": {"ignore_prior": False}}
 
     cobaya_info = {"theory": theory_info, "likelihood": likelihood_info, "params": param_info, "prior": prior_info, "sampler": sampler_info, "debug": True}
 
