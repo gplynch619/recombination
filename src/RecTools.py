@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime
 import numpy as np
 import pickle
@@ -11,6 +12,9 @@ import scipy
 import matplotlib.patches
 import time
 
+sys.path.insert(0, "/Users/gabe/projects/wave/src")
+import constants as con
+
 def square(f):
     def wrapper(*args, **kwargs):
         return f(*args, **kwargs)**2
@@ -22,6 +26,105 @@ def renormalize(norm):
             return f(*args, **kwargs)*norm
         return wrapper
     return dec
+
+class CosmoCalculator:
+
+    def __init__(self, params):
+        self.omega_b              = params["omega_b"]
+        self.omega_cdm            = params["omega_cdm"]
+        self.H0                   = params["H0"]
+        self.hubble               = params["H0"]/100
+        self.n_s                  = params["n_s"]
+        self.tau_reio             = params["tau_reio"]
+        self.logA                 = params["ln10^{10}A_s"]
+        
+        if "Tcmb" in params:
+            self.Tcmb = params["Tcmb"]
+        else:
+            self.Tcmb = 2.7255
+        
+        if "N_ur" in params:
+            self.N_ur                 = params["N_ur"]
+        else:
+            self.N_ur = 2.0308
+
+        if "N_ncdm" in params:
+            self.N_ncdm = params["N_ncdm"]
+        else:
+            self.N_ncdm = 1
+
+        if "T_ncdm" in params:
+            self.T_nu = params["T_ncdm"]
+        else:
+            self.T_nu = 0.71611
+
+        if "m_ncdm" in params:
+            self.m_nu = params["m_ncdm"]
+        else:
+            self.m_nu = .06
+
+        self.rho_c0 = con.rho_c_h100*self.hubble**2
+        # pi^2/15 T^4, with factor for conversion to eV/cm^3
+        self.rho_g = np.pi**2/15 * (con.k_b**4 / (con.hbar*con.c)**3) / (100**3) * (self.Tcmb)**4
+        self.Omega_g = self.rho_g/self.rho_c0
+        self.omega_g = self.Omega_g*self.hubble**2
+
+        self.f_nu_massless = self.N_ur*(7.0/8.0)*self.T_nu**4 # number of light relic species as a fraction of photon density
+        self.f_nu_massive = self.N_ncdm*(7.0/8.0)*self.T_nu**4 # number of light relic species as a fraction of photon density
+        self.omega_nu = self.m_nu/93.14
+
+        if self.f_nu_massive==0:
+            self.Omega_nu =0 
+        else:
+            self.Omega_nu = self.omega_nu / (self.hubble**2)
+
+        self.Omega_b = self.omega_b/(self.hubble**2)
+        self.Omega_cdm = self.omega_cdm/(self.hubble**2)
+        self.Omega_cb = self.Omega_b + self.Omega_cdm
+        self.Omega_m = self.Omega_cb + self.Omega_nu
+
+        self.Omega_L = 1-self.Omega_m - (1+self.f_nu_massless)*self.Omega_g
+
+    def E(self, z):
+        return np.sqrt(self.Omega_cb*(1+z)**3 + (1+self.f_nu_massless)*self.Omega_g*(1+z)**4 + self.Omega_nu_massive((1/(1+z))) + self.Omega_L)
+
+    def Hubble(self, z, units="1/s"):
+        if units=="1/s":
+            return (3.241e-18*self.hubble)*self.E(z)
+        elif units=="km/s/Mpc":
+            return self.H0*self.E(z)
+    
+    def comoving_distance(self, z, z_r=0):
+        #returns comoving distance between z(=z_emitted) and z_r(=z_received) in units of seconds
+        return scipy.integrate.quad(lambda zp: 1/self.Hubble(zp), z_r, z)[0]
+
+    def conformal_time(self, z):
+        # returns conformal time at redshift z in seconds
+        return scipy.integrate.quad(lambda zp: 1/self.Hubble(zp), z, np.inf)[0]
+
+    # baryon to photon energy ratio
+    def R(self, z):
+        return ((3*self.omega_b)/(4*self.omega_g))*(1+z)**-1
+
+    # baryon-photon plasma sound speed
+    def cs(self, z):
+        return np.sqrt(1/(3*(1+self.R(z))))
+
+    def tau_dot(self, z, xe_z, Yp=0.24536856816913238):
+        thom = 6.65246e-25 #cm^2
+        m_H = 9.3827e8 # eV
+        cm_in_Mpc = 3.086e24
+        n_e0 = (self.rho_c0*self.Omega_b/m_H)*(1-Yp) # 1/cm^3, factor of Yp is to convert from rho_b to rho_H. rho_c*Omega_b/m_H is NOT n_H. 
+        return xe_z*(thom*n_e0*cm_in_Mpc)*(1+z)**2
+
+    def Omega_nu_massive(self, a):
+        mat = self.Omega_nu/a**3
+        rad = self.f_nu_massive*self.Omega_g/(a**4)
+        if mat>=rad:
+            return mat
+        else:
+            return rad
+        
 
 class FisherCalculator:
     """ A class to compute a recombination Fisher matrix.
@@ -282,29 +385,29 @@ class FisherCalculator:
         P_channels = []
         if self.noise_parameters['use_143']:
             #convert from arcmin -> radians, then divide by 2.355 to get sigma from FWHM
-            beam_width_143 = (self.noise_parameters['beam_FWHM_143_arcmin']*arcmin_to_radians)#/np.sqrt(8*np.log(2))
+            beam_width_143 = (self.noise_parameters['beam_FWHM_143_arcmin']*arcmin_to_radians)/np.sqrt(8*np.log(2))
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_143']/B2_l)
             P_channels.append(self.noise_parameters['weight_inv_P_143']/B2_l)
         if self.noise_parameters['use_217']:
-            beam_width_143 = (self.noise_parameters['beam_FWHM_217_arcmin']*arcmin_to_radians)#/np.sqrt(8*np.log(2))
+            beam_width_143 = (self.noise_parameters['beam_FWHM_217_arcmin']*arcmin_to_radians)/np.sqrt(8*np.log(2))
             B2_l = np.exp(-self.ll*(self.ll+1)*beam_width_143**2)
             T_channels.append(self.noise_parameters['weight_inv_T_217']/B2_l)
             P_channels.append(self.noise_parameters['weight_inv_P_217']/B2_l)
     
         if not T_channels:
-            Nl_T = 0.0
+            self.Nl_T = 0.0
         else:
-            Nl_T = (np.sum(np.reciprocal(T_channels), axis=0))**(-1.)
+            self.Nl_T = (np.sum(np.reciprocal(T_channels), axis=0))**(-1.)
 
         if not P_channels:
-            Nl_P = 0.0
+            self.Nl_P = 0.0
         else:
-            Nl_P = (np.sum(np.reciprocal(P_channels), axis=0))**(-1.)
+            self.Nl_P = (np.sum(np.reciprocal(P_channels), axis=0))**(-1.)
 
-        row1 = np.stack([(self.tt_fid+Nl_T)**2, self.te_fid**2, (self.tt_fid+Nl_T)*self.te_fid], axis=1)
-        row2 = np.stack([self.te_fid**2, (self.ee_fid+Nl_P)**2, self.te_fid*(self.ee_fid+Nl_P)], axis=1)
-        row3 = np.stack([(self.tt_fid+Nl_T)*self.te_fid, self.te_fid*(self.ee_fid+Nl_P), 0.5*(self.te_fid**2 + (self.tt_fid+Nl_T)*(self.ee_fid+Nl_P))], axis=1)
+        row1 = np.stack([(self.tt_fid+self.Nl_T)**2, self.te_fid**2, (self.tt_fid+self.Nl_T)*self.te_fid], axis=1)
+        row2 = np.stack([self.te_fid**2, (self.ee_fid+self.Nl_P)**2, self.te_fid*(self.ee_fid+self.Nl_P)], axis=1)
+        row3 = np.stack([(self.tt_fid+self.Nl_T)*self.te_fid, self.te_fid*(self.ee_fid+self.Nl_P), 0.5*(self.te_fid**2 + (self.tt_fid+self.Nl_T)*(self.ee_fid+self.Nl_P))], axis=1)
 
         sigma = np.stack([row1, row2, row3], axis=1)
         for i, ell in enumerate(self.ll):

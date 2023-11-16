@@ -92,7 +92,7 @@ def main():
 
         precision_settings = {'accurate_lensing': 1,
                             'k_max_tau0_over_l_max': 15,
-                            'perturb_sampling_stepsize': 0.05,
+                            'perturbations_sampling_stepsize': 0.05,
                             'start_sources_at_tau_c_over_tau_h': 0.004}
 
         settings.update(common_settings)
@@ -109,7 +109,7 @@ def main():
                 break
 
             ind_info = model.popitem()
-
+            print(ind_info)
             print("RANK {} has model {}".format(rank, model))
             settings.update(model)
 
@@ -132,7 +132,7 @@ def main():
             if success:
                 for xx in output_spectra:
                     spectrum = M.lensed_cl(4000)[xx][2:]
-                    out_array = np.hstack((ind_info["global_index"], spectrum))
+                    out_array = np.hstack((ind_info[1], spectrum))
                     with open(outfiles[xx], 'ab') as f:
                         np.savetxt(f, [out_array])
             else:
